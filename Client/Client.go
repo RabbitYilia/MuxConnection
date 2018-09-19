@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"log"
 	"math/rand"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -13,6 +15,15 @@ import (
 )
 
 func main() {
+
+	conn, err := net.Dial("tcp", "127.0.0.1:6161")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+	writer := bufio.NewWriter(conn)
+	//reader := bufio.NewReader(conn)
+
 	md5Ctx := md5.New()
 	for {
 		timestamp := strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -51,7 +62,13 @@ func main() {
 			SendData["timestamp"] = timestamp
 			SendData["md5sum"] = md5sum
 			SendData["piecedmsg"] = piecedmsg
-			log.Println(SendData)
+			SendJson, err := json.Marshal(SendData)
+			if err != nil {
+				log.Fatal(err)
+			}
+			writer.Write([]byte(SendJson))
+			writer.Write([]byte("\n"))
+			writer.Flush()
 		}
 	}
 }
