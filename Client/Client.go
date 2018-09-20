@@ -36,7 +36,7 @@ func main() {
 	writer := bufio.NewWriter(conn)
 	reader := bufio.NewReader(conn)
 
-	go ProcessTX(reader)
+	go ProcessRX(reader)
 
 	for {
 		log.Println("Please input msg:")
@@ -54,12 +54,14 @@ func main() {
 	}
 }
 
-func ProcessTX(reader *bufio.Reader) {
-	RXByte, _, err := reader.ReadLine()
-	if err != nil {
-		return
+func ProcessRX(reader *bufio.Reader) {
+	for {
+		RXByte, _, err := reader.ReadLine()
+		if err != nil {
+			return
+		}
+		ProcessRXByte(RXByte)
 	}
-	ProcessRXByte(RXByte)
 }
 
 func RandInt(min, max int) int {
