@@ -34,7 +34,9 @@ func main() {
 	}
 	defer conn.Close()
 	writer := bufio.NewWriter(conn)
-	//reader := bufio.NewReader(conn)
+	reader := bufio.NewReader(conn)
+
+	go ProcessTX(reader)
 
 	for {
 		log.Println("Please input msg:")
@@ -52,6 +54,14 @@ func main() {
 	}
 }
 
+func ProcessTX(reader *bufio.Reader) {
+	RXByte, _, err := reader.ReadLine()
+	if err != nil {
+		return
+	}
+	ProcessRXByte(RXByte)
+}
+
 func RandInt(min, max int) int {
 	rand.Seed(time.Now().UnixNano() * rand.Int63n(100))
 	return min + rand.Intn(max-min+1)
@@ -65,7 +75,6 @@ func ProcessTXByte(TXByte []byte, writer *bufio.Writer) {
 	md5Ctx.Reset()
 	splitedmsgs := make(map[string]string)
 	piece := 0
-	log.Println(msg)
 	for {
 		piece += 1
 		if len(msg) < 10 {
@@ -116,7 +125,6 @@ func ProcessRXByte(RXByte []byte) {
 		packetbuffer[RXdata["md5sum"]] = thisbuffer
 		packetcount[RXdata["md5sum"]] = 1
 		packettotal[RXdata["md5sum"]] = thistotal
-		log.Println("OK")
 		packetbuffer[RXdata["md5sum"]][packetint] = RXdata["piecedmsg"]
 		if packetcount[RXdata["md5sum"]] == packettotal[RXdata["md5sum"]] {
 			DataStr := ""

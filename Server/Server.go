@@ -52,9 +52,7 @@ func handleRequest(conn net.Conn) {
 			return
 		}
 		ProcessRXByte(RXByte)
-
-		writer.Write([]byte("\n"))
-		writer.Flush()
+		ProcessTXByte([]byte("OK"), writer)
 	}
 }
 
@@ -66,7 +64,6 @@ func ProcessTXByte(TXByte []byte, writer *bufio.Writer) {
 	md5Ctx.Reset()
 	splitedmsgs := make(map[string]string)
 	piece := 0
-	log.Println(msg)
 	for {
 		piece += 1
 		if len(msg) < 10 {
@@ -117,7 +114,6 @@ func ProcessRXByte(RXByte []byte) {
 		packetbuffer[RXdata["md5sum"]] = thisbuffer
 		packetcount[RXdata["md5sum"]] = 1
 		packettotal[RXdata["md5sum"]] = thistotal
-		log.Println("OK")
 		packetbuffer[RXdata["md5sum"]][packetint] = RXdata["piecedmsg"]
 		if packetcount[RXdata["md5sum"]] == packettotal[RXdata["md5sum"]] {
 			DataStr := ""
