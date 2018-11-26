@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/clmul/go-windivert"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
@@ -39,8 +40,7 @@ func main() {
 	PacketCount = make(map[string]int)
 	PacketTotal = make(map[string]int)
 
-	WindivertInit("./x86_64/WinDivert.dll")
-	Handle, err := WinDivertOpenGo("true", 0, 0, 0)
+	Handle, err := windivert.Open("true", 0, 0, 0)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -77,10 +77,10 @@ func main() {
 	}
 	go RXLoop(Handle)
 	TXLoop(Handle)
-	WinDivertCloseGo(Handle)
+	Handle.Close()
 }
 
-func TXLoop(Handle uintptr) {
+func TXLoop(Handle windivert.Handle) {
 	buffer := gopacket.NewSerializeBuffer()
 	options := gopacket.SerializeOptions{}
 	input := GetInput("Dst IP")
@@ -102,11 +102,10 @@ func TXLoop(Handle uintptr) {
 			log.Fatal(err)
 		}
 
-		TXAddr := WinDivertAddress{}
-		TXAddr.Data = 0
+		TXAddr := windivert.Address{}
+		TXAddr.Direction = 0
 		TXAddr.IfIdx = 0
 		TXAddr.SubIfIdx = 0
-		TXAddr.Timestamp = time.Now().UnixNano() * 100
 
 		log.Println("Please input msg:")
 		inputReader := bufio.NewReader(os.Stdin)
@@ -120,7 +119,7 @@ func TXLoop(Handle uintptr) {
 			break
 		}
 
-		Timestamp := strconv.FormatInt(TXAddr.Timestamp/100, 10)
+		Timestamp := strconv.FormatInt(time.Now().UnixNano(), 10)
 		md5Ctx.Write([]byte(input))
 		MD5Sum := hex.EncodeToString(md5Ctx.Sum(nil))
 		md5Ctx.Reset()
@@ -199,9 +198,9 @@ func TXLoop(Handle uintptr) {
 			}
 
 			TXPacket := append(buffer.Bytes(), TXJson...)
-			WinDivertHelperCalcChecksumsGo(Handle, TXPacket, TXAddr)
+			TXPacket = windivert.CalcChecksums(TXPacket)
 
-			err = WinDivertSendGo(Handle, TXPacket, TXAddr)
+			_, err = Handle.Send(TXPacket, TXAddr)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -209,9 +208,11 @@ func TXLoop(Handle uintptr) {
 	}
 }
 
-func RXLoop(Handle uintptr) {
+func RXLoop(Handle windivert.Handle) {
 	for true {
-		RXPacket, RXAddr, err := WinDivertRecvGo(Handle)
+		RXPacket := make([]byte, 65535)
+		RXPacketLen, RXAddr, err := Handle.Recv(RXPacket)
+		RXPacket = RXPacket[:RXPacketLen]
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -219,7 +220,7 @@ func RXLoop(Handle uintptr) {
 	}
 }
 
-func ProcessRX(Handle uintptr, RXPacket []byte, RXAddr WinDivertAddress) {
+func ProcessRX(Handle windivert.Handle, RXPacket []byte, RXAddr windivert.Address) {
 	IPVersion := int(RXPacket[0] >> 4)
 	var SrcIP, DstIP net.IP
 	var SrcPort, DstPort string
@@ -236,7 +237,7 @@ func ProcessRX(Handle uintptr, RXPacket []byte, RXAddr WinDivertAddress) {
 		SrcIP = IPv6Header.SrcIP
 		DstIP = IPv6Header.DstIP
 	default:
-		err := WinDivertSendGo(Handle, RXPacket, RXAddr)
+		_, err := Handle.Send(RXPacket, RXAddr)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -249,7 +250,7 @@ func ProcessRX(Handle uintptr, RXPacket []byte, RXAddr WinDivertAddress) {
 			DstPort = UDPHeader.DstPort.String()
 		case layers.LayerTypeTCP:
 			//Do not Process At Present
-			err := WinDivertSendGo(Handle, RXPacket, RXAddr)
+			_, err := Handle.Send(RXPacket, RXAddr)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -259,7 +260,7 @@ func ProcessRX(Handle uintptr, RXPacket []byte, RXAddr WinDivertAddress) {
 			SrcPort = TCPHeader.SrcPort.String()
 			DstPort = TCPHeader.DstPort.String()
 		default:
-			err := WinDivertSendGo(Handle, RXPacket, RXAddr)
+			_, err := Handle.Send(RXPacket, RXAddr)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -275,7 +276,7 @@ func ProcessRX(Handle uintptr, RXPacket []byte, RXAddr WinDivertAddress) {
 			return
 		}
 	}
-	err := WinDivertSendGo(Handle, RXPacket, RXAddr)
+	_, err := Handle.Send(RXPacket, RXAddr)
 	if err != nil {
 		log.Fatal(err)
 	}

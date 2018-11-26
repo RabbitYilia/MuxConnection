@@ -1,4 +1,7 @@
 *.exe 
 .idea
+*.dll
+*.lib
+*.sys
 x86
 x86_64
