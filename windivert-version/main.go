@@ -266,6 +266,11 @@ func RXLoop(Handle windivert.Handle) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		_, err = Handle.Send(RXPacket, RXAddr)
+		if err != nil {
+			log.Fatal(err)
+		}
+
 		go ProcessRX(Handle, RXPacket, RXAddr)
 	}
 }
@@ -287,10 +292,6 @@ func ProcessRX(Handle windivert.Handle, RXPacket []byte, RXAddr windivert.Addres
 		SrcIP = IPv6Header.SrcIP
 		DstIP = IPv6Header.DstIP
 	default:
-		_, err := Handle.Send(RXPacket, RXAddr)
-		if err != nil {
-			log.Fatal(err)
-		}
 		return
 	}
 	if ThisRXPacket.TransportLayer() != nil {
@@ -300,21 +301,12 @@ func ProcessRX(Handle windivert.Handle, RXPacket []byte, RXAddr windivert.Addres
 			SrcPort = UDPHeader.SrcPort.String()
 			DstPort = UDPHeader.DstPort.String()
 		case layers.LayerTypeTCP:
-			//Do not Process At Present
-			_, err := Handle.Send(RXPacket, RXAddr)
-			if err != nil {
-				log.Fatal(err)
-			}
 			return
 
 			TCPHeader := ThisRXPacket.TransportLayer().(*layers.TCP)
 			SrcPort = TCPHeader.SrcPort.String()
 			DstPort = TCPHeader.DstPort.String()
 		default:
-			_, err := Handle.Send(RXPacket, RXAddr)
-			if err != nil {
-				log.Fatal(err)
-			}
 			return
 		}
 	}
@@ -327,10 +319,6 @@ func ProcessRX(Handle windivert.Handle, RXPacket []byte, RXAddr windivert.Addres
 			ProcessRXData(RXdata)
 			return
 		}
-	}
-	_, err := Handle.Send(RXPacket, RXAddr)
-	if err != nil {
-		log.Fatal(err)
 	}
 }
 
