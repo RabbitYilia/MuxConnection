@@ -40,14 +40,14 @@ var PacketTotal map[string]int
 
 func main() {
 	md5Ctx = md5.New()
-	IPv6SrcMapLen=0
-	IPv4SrcMapLen=0
-	IPv6DstMapLen=0
-	IPv4DstMapLen=0
-	IPv6SrcMap=make(map[int]net.IP)
-	IPv4SrcMap=make(map[int]net.IP)
-	IPv6DstMap=make(map[int]net.IP)
-	IPv4DstMap=make(map[int]net.IP)
+	IPv6SrcMapLen = 0
+	IPv4SrcMapLen = 0
+	IPv6DstMapLen = 0
+	IPv4DstMapLen = 0
+	IPv6SrcMap = make(map[int]net.IP)
+	IPv4SrcMap = make(map[int]net.IP)
+	IPv6DstMap = make(map[int]net.IP)
+	IPv4DstMap = make(map[int]net.IP)
 	PacketBuffer = make(map[string][]string)
 	PacketTimestamp = make(map[string]string)
 	PacketCount = make(map[string]int)
@@ -70,16 +70,16 @@ func main() {
 		log.Fatal(err)
 	}
 
-	IPv4SrcMap[IPv4SrcMapLen]=net.ParseIP("127.0.0.1")
-	IPv6SrcMap[IPv6SrcMapLen]=net.ParseIP("fe80::1")
-	IPv4DstMap[IPv4DstMapLen]=net.ParseIP("127.0.0.1")
-	IPv6DstMap[IPv6DstMapLen]=net.ParseIP("fe80::1")
-	IPv6SrcMapLen=IPv6SrcMapLen+1
-	IPv4SrcMapLen=IPv4SrcMapLen+1
-	IPv6DstMapLen=IPv6DstMapLen+1
-	IPv4DstMapLen=IPv4DstMapLen+1
+	IPv4SrcMap[IPv4SrcMapLen] = net.ParseIP("127.0.0.1")
+	IPv6SrcMap[IPv6SrcMapLen] = net.ParseIP("fe80::1")
+	IPv4DstMap[IPv4DstMapLen] = net.ParseIP("127.0.0.1")
+	IPv6DstMap[IPv6DstMapLen] = net.ParseIP("fe80::1")
+	IPv6SrcMapLen = IPv6SrcMapLen + 1
+	IPv4SrcMapLen = IPv4SrcMapLen + 1
+	IPv6DstMapLen = IPv6DstMapLen + 1
+	IPv4DstMapLen = IPv4DstMapLen + 1
 	for _, address := range addrs {
-		thisaddr := net.ParseIP(strings.Split(address.String(),"/")[0])
+		thisaddr := net.ParseIP(strings.Split(address.String(), "/")[0])
 		if thisaddr.IsLoopback() || !thisaddr.IsGlobalUnicast() || thisaddr.IsUnspecified() {
 			continue
 		}
@@ -87,11 +87,11 @@ func main() {
 			continue
 		}
 		if strings.Contains(thisaddr.String(), ".") {
-			IPv4SrcMap[IPv4SrcMapLen]=thisaddr
-			IPv4SrcMapLen=IPv4SrcMapLen+1
+			IPv4SrcMap[IPv4SrcMapLen] = thisaddr
+			IPv4SrcMapLen = IPv4SrcMapLen + 1
 		} else {
-			IPv6SrcMap[IPv6SrcMapLen]=thisaddr
-			IPv6SrcMapLen=IPv6SrcMapLen+1
+			IPv6SrcMap[IPv6SrcMapLen] = thisaddr
+			IPv6SrcMapLen = IPv6SrcMapLen + 1
 		}
 
 		log.Println("Listen on:", thisaddr.String())
@@ -99,16 +99,16 @@ func main() {
 
 	for {
 		input := GetInput("Dst IP")
-		thisIP:=net.ParseIP(input)
-		if input=="" || thisIP==nil{
+		thisIP := net.ParseIP(input)
+		if input == "" || thisIP == nil {
 			break
 		}
-		if(strings.Contains(input,".")) {
-			IPv4DstMap[IPv4DstMapLen]=thisIP
-			IPv4DstMapLen=IPv4DstMapLen+1
-		}else{
-			IPv6DstMap[IPv6DstMapLen]=thisIP
-			IPv6DstMapLen=IPv6DstMapLen+1
+		if strings.Contains(input, ".") {
+			IPv4DstMap[IPv4DstMapLen] = thisIP
+			IPv4DstMapLen = IPv4DstMapLen + 1
+		} else {
+			IPv6DstMap[IPv6DstMapLen] = thisIP
+			IPv6DstMapLen = IPv6DstMapLen + 1
 		}
 	}
 
@@ -118,13 +118,13 @@ func main() {
 	if IPv4DstMapLen == 1 && IPv6DstMapLen == 1 {
 		log.Fatal("No Address to send")
 	}
-	if IPv4SrcMapLen==1 && IPv4DstMapLen==1 {
-		if IPv6SrcMapLen==1||IPv6DstMapLen==1{
+	if IPv4SrcMapLen == 1 && IPv4DstMapLen == 1 {
+		if IPv6SrcMapLen == 1 || IPv6DstMapLen == 1 {
 			log.Fatal("Network Unreachable")
 		}
 	}
-	if IPv6SrcMapLen==1 && IPv6DstMapLen==1 {
-		if IPv4SrcMapLen==1||IPv4DstMapLen==1{
+	if IPv6SrcMapLen == 1 && IPv6DstMapLen == 1 {
+		if IPv4SrcMapLen == 1 || IPv4DstMapLen == 1 {
 			log.Fatal("Network Unreachable")
 		}
 	}
@@ -137,10 +137,8 @@ func main() {
 func TXLoop(Handle windivert.Handle) {
 	buffer := gopacket.NewSerializeBuffer()
 	options := gopacket.SerializeOptions{}
-
 	for {
-		SrcPort := RandInt(1, 65535)
-		DstPort := RandInt(1, 65535)
+
 		err := buffer.Clear()
 		if err != nil {
 			log.Fatal(err)
@@ -151,8 +149,8 @@ func TXLoop(Handle windivert.Handle) {
 		TXAddr.IfIdx = 0
 		TXAddr.SubIfIdx = 0
 
-		input:=GetInput("Msg")
-		
+		input := GetInput("Msg")
+
 		Timestamp := strconv.FormatInt(time.Now().UnixNano(), 10)
 		md5Ctx.Write([]byte(input))
 		MD5Sum := hex.EncodeToString(md5Ctx.Sum(nil))
@@ -171,27 +169,28 @@ func TXLoop(Handle windivert.Handle) {
 		}
 
 		for thispiece, piecedmsg := range SplitedMsgs {
+			SrcPort := RandInt(1, 65535)
+			DstPort := RandInt(1, 65535)
 			var DstIP net.IP
 			var SrcIP net.IP
-			switch RandInt(0,1)	{
-				case 0:
-					if(IPv6SrcMapLen!=1 && IPv6DstMapLen!=1) {
-						DstIP = IPv6DstMap[RandInt(1, IPv6DstMapLen-1)]
-						SrcIP = IPv6SrcMap[RandInt(1, IPv6SrcMapLen-1)]
-					}else{
-						DstIP = IPv4DstMap[RandInt(1, IPv4DstMapLen-1)]
-						SrcIP = IPv4SrcMap[RandInt(1, IPv4SrcMapLen-1)]
-					}
-				case 1:
-					if(IPv4SrcMapLen!=1 && IPv4DstMapLen!=1) {
-						DstIP = IPv4DstMap[RandInt(1, IPv4DstMapLen-1)]
-						SrcIP = IPv4SrcMap[RandInt(1, IPv4SrcMapLen-1)]
-					}else{
-						DstIP = IPv6DstMap[RandInt(1, IPv6DstMapLen-1)]
-						SrcIP = IPv6SrcMap[RandInt(1, IPv6SrcMapLen-1)]
-					}
+			switch RandInt(0, 1) {
+			case 0:
+				if IPv6SrcMapLen != 1 && IPv6DstMapLen != 1 {
+					DstIP = IPv6DstMap[RandInt(1, IPv6DstMapLen-1)]
+					SrcIP = IPv6SrcMap[RandInt(1, IPv6SrcMapLen-1)]
+				} else {
+					DstIP = IPv4DstMap[RandInt(1, IPv4DstMapLen-1)]
+					SrcIP = IPv4SrcMap[RandInt(1, IPv4SrcMapLen-1)]
+				}
+			case 1:
+				if IPv4SrcMapLen != 1 && IPv4DstMapLen != 1 {
+					DstIP = IPv4DstMap[RandInt(1, IPv4DstMapLen-1)]
+					SrcIP = IPv4SrcMap[RandInt(1, IPv4SrcMapLen-1)]
+				} else {
+					DstIP = IPv6DstMap[RandInt(1, IPv6DstMapLen-1)]
+					SrcIP = IPv6SrcMap[RandInt(1, IPv6SrcMapLen-1)]
+				}
 			}
-
 
 			TXData := make(map[string]string)
 			TXData["Piece"] = strconv.Itoa(piece)
@@ -208,7 +207,6 @@ func TXLoop(Handle windivert.Handle) {
 			UDPLayer.SrcPort = layers.UDPPort(SrcPort)
 			UDPLayer.DstPort = layers.UDPPort(DstPort)
 			UDPLayer.Length = uint16(len(TXJson) + 8)
-
 
 			if strings.Contains(DstIP.String(), ",") {
 				ipv4Layer := &layers.IPv4{}
