@@ -53,11 +53,6 @@ func main() {
 	PacketCount = make(map[string]int)
 	PacketTotal = make(map[string]int)
 
-	Handle, err := windivert.Open("ip.Protocol!=2", 0, 0, 0)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		log.Fatal(err)
@@ -127,6 +122,11 @@ func main() {
 		if IPv4SrcMapLen == 1 || IPv4DstMapLen == 1 {
 			log.Fatal("Network Unreachable")
 		}
+	}
+
+	Handle, err := windivert.Open("ip.Protocol!=2", 0, 0, 0)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	go RXLoop(Handle)
@@ -266,7 +266,7 @@ func RXLoop(Handle windivert.Handle) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		go ProcessRX(Handle, RXPacket, RXAddr)
+		ProcessRX(Handle, RXPacket, RXAddr)
 	}
 }
 
@@ -292,6 +292,7 @@ func ProcessRX(Handle windivert.Handle, RXPacket []byte, RXAddr windivert.Addres
 			log.Fatal(err)
 		}
 	}
+	log.Println(ThisRXPacket)
 	if ThisRXPacket.TransportLayer() != nil {
 		switch ThisRXPacket.TransportLayer().LayerType() {
 		case layers.LayerTypeUDP:
@@ -314,6 +315,7 @@ func ProcessRX(Handle windivert.Handle, RXPacket []byte, RXAddr windivert.Addres
 			if err != nil {
 				log.Fatal(err)
 			}
+			return
 		}
 	}
 
