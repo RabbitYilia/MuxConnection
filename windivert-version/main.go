@@ -23,8 +23,14 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-var IPv6Map []net.IP
-var IPv4Map []net.IP
+var IPv6SrcMap map[int]net.IP
+var IPv6SrcMapLen int
+var IPv4SrcMap map[int]net.IP
+var IPv4SrcMapLen int
+var IPv6DstMap map[int]net.IP
+var IPv6DstMapLen int
+var IPv4DstMap map[int]net.IP
+var IPv4DstMapLen int
 var md5Ctx hash.Hash
 
 var PacketBuffer map[string][]string
@@ -34,7 +40,14 @@ var PacketTotal map[string]int
 
 func main() {
 	md5Ctx = md5.New()
-
+	IPv6SrcMapLen=0
+	IPv4SrcMapLen=0
+	IPv6DstMapLen=0
+	IPv4DstMapLen=0
+	IPv6SrcMap=make(map[int]net.IP)
+	IPv4SrcMap=make(map[int]net.IP)
+	IPv6DstMap=make(map[int]net.IP)
+	IPv4DstMap=make(map[int]net.IP)
 	PacketBuffer = make(map[string][]string)
 	PacketTimestamp = make(map[string]string)
 	PacketCount = make(map[string]int)
@@ -49,6 +62,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	_, localnet192, err := net.ParseCIDR("192.168.0.0/16")
 	_, localnet172, err := net.ParseCIDR("172.16.0.0/12")
 	_, localnet10, err := net.ParseCIDR("10.0.0.0/8")
@@ -56,25 +70,65 @@ func main() {
 		log.Fatal(err)
 	}
 
+	IPv4SrcMap[IPv4SrcMapLen]=net.ParseIP("127.0.0.1")
+	IPv6SrcMap[IPv6SrcMapLen]=net.ParseIP("fe80::1")
+	IPv4DstMap[IPv4DstMapLen]=net.ParseIP("127.0.0.1")
+	IPv6DstMap[IPv6DstMapLen]=net.ParseIP("fe80::1")
+	IPv6SrcMapLen=IPv6SrcMapLen+1
+	IPv4SrcMapLen=IPv4SrcMapLen+1
+	IPv6DstMapLen=IPv6DstMapLen+1
+	IPv4DstMapLen=IPv4DstMapLen+1
 	for _, address := range addrs {
-		thisaddr := address.(*net.IPNet)
-		if thisaddr.IP.IsLoopback() || !thisaddr.IP.IsGlobalUnicast() || thisaddr.IP.IsUnspecified() {
+		thisaddr := net.ParseIP(strings.Split(address.String(),"/")[0])
+		if thisaddr.IsLoopback() || !thisaddr.IsGlobalUnicast() || thisaddr.IsUnspecified() {
 			continue
 		}
-		if localnet10.Contains(thisaddr.IP) || localnet172.Contains(thisaddr.IP) || localnet192.Contains(thisaddr.IP) {
+		if localnet10.Contains(thisaddr) || localnet172.Contains(thisaddr) || localnet192.Contains(thisaddr) {
 			continue
 		}
-		if strings.Contains(strings.Split(thisaddr.String(), "/")[0], ".") {
-			IPv4Map = append(IPv4Map, thisaddr.IP)
+		if strings.Contains(thisaddr.String(), ".") {
+			IPv4SrcMap[IPv4SrcMapLen]=thisaddr
+			IPv4SrcMapLen=IPv4SrcMapLen+1
 		} else {
-			IPv6Map = append(IPv6Map, thisaddr.IP)
+			IPv6SrcMap[IPv6SrcMapLen]=thisaddr
+			IPv6SrcMapLen=IPv6SrcMapLen+1
 		}
 
-		log.Println("Listen on:", strings.Split(thisaddr.String(), "/")[0])
+		log.Println("Listen on:", thisaddr.String())
 	}
-	if len(IPv4Map) == 0 && len(IPv6Map) == 0 {
+
+	for {
+		input := GetInput("Dst IP")
+		thisIP:=net.ParseIP(input)
+		if input=="" || thisIP==nil{
+			break
+		}
+		if(strings.Contains(input,".")) {
+			IPv4DstMap[IPv4DstMapLen]=thisIP
+			IPv4DstMapLen=IPv4DstMapLen+1
+		}else{
+			IPv6DstMap[IPv6DstMapLen]=thisIP
+			IPv6DstMapLen=IPv6DstMapLen+1
+		}
+	}
+
+	if IPv4SrcMapLen == 1 && IPv6SrcMapLen == 1 {
 		log.Fatal("No Address to listen")
 	}
+	if IPv4DstMapLen == 1 && IPv6DstMapLen == 1 {
+		log.Fatal("No Address to send")
+	}
+	if IPv4SrcMapLen==1 && IPv4DstMapLen==1 {
+		if IPv6SrcMapLen==1||IPv6DstMapLen==1{
+			log.Fatal("Network Unreachable")
+		}
+	}
+	if IPv6SrcMapLen==1 && IPv6DstMapLen==1 {
+		if IPv4SrcMapLen==1||IPv4DstMapLen==1{
+			log.Fatal("Network Unreachable")
+		}
+	}
+
 	go RXLoop(Handle)
 	TXLoop(Handle)
 	Handle.Close()
@@ -83,17 +137,7 @@ func main() {
 func TXLoop(Handle windivert.Handle) {
 	buffer := gopacket.NewSerializeBuffer()
 	options := gopacket.SerializeOptions{}
-	input := GetInput("Dst IP")
-	DstIP := net.ParseIP(input)
-	if strings.Contains(DstIP.String(), ".") && len(IPv4Map) == 0 {
-		log.Fatal("Cannot send to this v4 addr")
-	}
-	if strings.Contains(DstIP.String(), ":") && len(IPv6Map) == 0 {
-		log.Fatal("Cannot send to this v6 addr")
-	}
-	if DstIP == nil {
-		log.Fatal("Invaild Addr")
-	}
+
 	for {
 		SrcPort := RandInt(1, 65535)
 		DstPort := RandInt(1, 65535)
@@ -107,18 +151,8 @@ func TXLoop(Handle windivert.Handle) {
 		TXAddr.IfIdx = 0
 		TXAddr.SubIfIdx = 0
 
-		log.Println("Please input msg:")
-		inputReader := bufio.NewReader(os.Stdin)
-		input, err := inputReader.ReadString('\n')
-		if err != nil {
-			log.Fatal(err)
-		}
-		input = strings.Trim(input, "\n")
-		input = strings.Trim(input, "\r")
-		if input == "" {
-			break
-		}
-
+		input:=GetInput("Msg")
+		
 		Timestamp := strconv.FormatInt(time.Now().UnixNano(), 10)
 		md5Ctx.Write([]byte(input))
 		MD5Sum := hex.EncodeToString(md5Ctx.Sum(nil))
@@ -137,6 +171,28 @@ func TXLoop(Handle windivert.Handle) {
 		}
 
 		for thispiece, piecedmsg := range SplitedMsgs {
+			var DstIP net.IP
+			var SrcIP net.IP
+			switch RandInt(0,1)	{
+				case 0:
+					if(IPv6SrcMapLen!=1 && IPv6DstMapLen!=1) {
+						DstIP = IPv6DstMap[RandInt(1, IPv6DstMapLen-1)]
+						SrcIP = IPv6SrcMap[RandInt(1, IPv6SrcMapLen-1)]
+					}else{
+						DstIP = IPv4DstMap[RandInt(1, IPv4DstMapLen-1)]
+						SrcIP = IPv4SrcMap[RandInt(1, IPv4SrcMapLen-1)]
+					}
+				case 1:
+					if(IPv4SrcMapLen!=1 && IPv4DstMapLen!=1) {
+						DstIP = IPv4DstMap[RandInt(1, IPv4DstMapLen-1)]
+						SrcIP = IPv4SrcMap[RandInt(1, IPv4SrcMapLen-1)]
+					}else{
+						DstIP = IPv6DstMap[RandInt(1, IPv6DstMapLen-1)]
+						SrcIP = IPv6SrcMap[RandInt(1, IPv6SrcMapLen-1)]
+					}
+			}
+
+
 			TXData := make(map[string]string)
 			TXData["Piece"] = strconv.Itoa(piece)
 			TXData["thisPiece"] = thispiece
@@ -153,10 +209,8 @@ func TXLoop(Handle windivert.Handle) {
 			UDPLayer.DstPort = layers.UDPPort(DstPort)
 			UDPLayer.Length = uint16(len(TXJson) + 8)
 
-			var SrcIP net.IP
-			if strings.Contains(DstIP.String(), ",") {
-				SrcIP = IPv4Map[RandInt(0, len(IPv4Map)-1)]
 
+			if strings.Contains(DstIP.String(), ",") {
 				ipv4Layer := &layers.IPv4{}
 				ipv4Layer.SrcIP = SrcIP
 				ipv4Layer.DstIP = DstIP
@@ -179,7 +233,6 @@ func TXLoop(Handle windivert.Handle) {
 				UDPLayer.Checksum = checkSum(FakeHeaderbyte)
 				gopacket.SerializeLayers(buffer, options, ipv4Layer, UDPLayer)
 			} else {
-				SrcIP = IPv6Map[RandInt(0, len(IPv6Map)-1)]
 				ipv6Layer := &layers.IPv6{}
 				ipv6Layer.SrcIP = SrcIP
 				ipv6Layer.DstIP = DstIP
@@ -196,7 +249,6 @@ func TXLoop(Handle windivert.Handle) {
 				UDPLayer.Checksum = checkSum(FakeHeaderbyte)
 				gopacket.SerializeLayers(buffer, options, ipv6Layer, UDPLayer)
 			}
-
 			TXPacket := append(buffer.Bytes(), TXJson...)
 			TXPacket = windivert.CalcChecksums(TXPacket)
 
