@@ -266,7 +266,7 @@ func RXLoop(Handle windivert.Handle) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		ProcessRX(Handle, RXPacket, RXAddr)
+		go ProcessRX(Handle, RXPacket, RXAddr)
 	}
 }
 
@@ -291,6 +291,7 @@ func ProcessRX(Handle windivert.Handle, RXPacket []byte, RXAddr windivert.Addres
 		if err != nil {
 			log.Fatal(err)
 		}
+		return
 	}
 	log.Println(ThisRXPacket)
 	if ThisRXPacket.TransportLayer() != nil {
