@@ -293,7 +293,6 @@ func ProcessRX(Handle windivert.Handle, RXPacket []byte, RXAddr windivert.Addres
 		}
 		return
 	}
-	log.Println(ThisRXPacket)
 	if ThisRXPacket.TransportLayer() != nil {
 		switch ThisRXPacket.TransportLayer().LayerType() {
 		case layers.LayerTypeUDP:
