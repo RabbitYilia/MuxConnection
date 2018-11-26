@@ -124,7 +124,7 @@ func main() {
 		}
 	}
 
-	Handle, err := windivert.Open("ip.Protocol!=2 and ip.SrcAddr<3758096384", 0, 0, 0)
+	Handle, err := windivert.Open("ip.Protocol!=2 and ip.DstAddr<3758096384", 0, 0, 0)
 	if err != nil {
 		log.Fatal(err)
 	}
