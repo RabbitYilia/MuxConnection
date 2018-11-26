@@ -40,7 +40,7 @@ func main() {
 	PacketCount = make(map[string]int)
 	PacketTotal = make(map[string]int)
 
-	Handle, err := windivert.Open("true", 0, 0, 0)
+	Handle, err := windivert.Open("ip.Protocol!=2", 0, 0, 0)
 	if err != nil {
 		log.Fatal(err)
 	}
