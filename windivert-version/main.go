@@ -35,6 +35,12 @@ type ProtocolPacket struct {
 	Finish          bool
 }
 
+type ActualPacket struct {
+	Msg   string
+	SrcIP net.IP
+	DstIP net.IP
+}
+
 var (
 	IPv4SrcMap   = make(map[int]string)
 	IPv4DstMap   = make(map[int]string)
@@ -339,7 +345,8 @@ func ProcessRXData(RXData map[string]string) {
 			for i := 1; i <= RXPacket.PacketTotal; i++ {
 				DataStr += RXPacket.PacketData[i]
 			}
-			log.Println(string(DataStr))
+
+			log.Println(ActualPacket{Msg: DataStr, SrcIP: net.ParseIP(RXData["SrcIP"]), DstIP: net.ParseIP(RXData["DstIP"])})
 			delete(PacketBuffer, MD5Sum)
 		}
 	}
