@@ -44,7 +44,6 @@ var (
 	txChannel    = make(chan Packet)
 	md5Ctx       = md5.New()
 	PacketBuffer = make(map[string]*ProtocolPacket)
-	ticker       = time.NewTicker(time.Second * 10)
 	Handle       windivert.Handle
 )
 
@@ -87,6 +86,7 @@ func main() {
 	go RXLoop()
 	go TXLoop()
 	go ProcessLoop()
+	go CleanBuffer()
 
 	//Get DstIP
 	HaveFile, err := PathExists("./dst.txt")
@@ -291,7 +291,6 @@ func ProcessLoop() {
 			RXdata := make(map[string]string)
 			err := json.Unmarshal(ThisRXPacket.ApplicationLayer().Payload(), &RXdata)
 			if err == nil {
-				log.Println("From " + RXdata["SrcIP"] + " to " + RXdata["DstIP"] + " :")
 				ProcessRXData(RXdata)
 				continue
 			}
@@ -301,8 +300,11 @@ func ProcessLoop() {
 }
 
 func ProcessRXData(RXData map[string]string) {
-	RXPacket, ok := PacketBuffer[RXData["MD5sum"]]
-	ThisPiece, err := strconv.Atoi(RXData["ThisPiece"])
+	MD5Sum := RXData["MD5sum"]
+	ThisPieceStr := RXData["ThisPiece"]
+	log.Println("[" + MD5Sum + "]" + "[" + ThisPieceStr + "/" + RXData["Piece"] + "]" + "From " + RXData["SrcIP"] + " to " + RXData["DstIP"] + " :")
+	RXPacket, ok := PacketBuffer[MD5Sum]
+	ThisPiece, err := strconv.Atoi(ThisPieceStr)
 	if err != nil {
 		return
 	}
@@ -315,16 +317,16 @@ func ProcessRXData(RXData map[string]string) {
 		if err != nil {
 			return
 		}
-		PacketBuffer[RXData["MD5sum"]] = &ProtocolPacket{Finish: false, PacketCount: 1, PacketTimestamp: Timestamp, PacketTotal: Piece, PacketData: make(map[int]string)}
-		PacketBuffer[RXData["MD5sum"]].PacketData[ThisPiece] = RXData["PiecedMsg"]
-		if PacketBuffer[RXData["MD5sum"]].PacketCount == PacketBuffer[RXData["MD5sum"]].PacketTotal {
+		PacketBuffer[MD5Sum] = &ProtocolPacket{Finish: false, PacketCount: 1, PacketTimestamp: Timestamp, PacketTotal: Piece, PacketData: make(map[int]string)}
+		PacketBuffer[MD5Sum].PacketData[ThisPiece] = RXData["PiecedMsg"]
+		if PacketBuffer[MD5Sum].PacketCount == PacketBuffer[MD5Sum].PacketTotal {
 			DataStr := ""
-			PacketBuffer[RXData["MD5sum"]].Finish = true
-			for i := 1; i <= PacketBuffer[RXData["MD5sum"]].PacketTotal; i++ {
-				DataStr += PacketBuffer[RXData["md5sum"]].PacketData[i]
+			PacketBuffer[MD5Sum].Finish = true
+			for i := 1; i <= PacketBuffer[MD5Sum].PacketTotal; i++ {
+				DataStr += PacketBuffer[MD5Sum].PacketData[i]
 			}
 			log.Println(string(DataStr))
-			delete(PacketBuffer, RXData["md5sum"])
+			delete(PacketBuffer, MD5Sum)
 		}
 	} else {
 		if RXPacket.PacketData[ThisPiece] != RXData["PiecedMsg"] {
@@ -338,7 +340,7 @@ func ProcessRXData(RXData map[string]string) {
 				DataStr += RXPacket.PacketData[i]
 			}
 			log.Println(string(DataStr))
-			delete(PacketBuffer, RXData["md5sum"])
+			delete(PacketBuffer, MD5Sum)
 		}
 	}
 }
@@ -391,7 +393,7 @@ func RandInt(min, max int) int {
 
 func CleanBuffer() {
 	for {
-		<-ticker.C
+		time.Sleep(60 * time.Second)
 		TimeOutTime := time.Now().UnixNano() + 60*time.Second.Nanoseconds()
 		for MD5Sum, Pack := range PacketBuffer {
 			if Pack.PacketTimestamp < TimeOutTime {
