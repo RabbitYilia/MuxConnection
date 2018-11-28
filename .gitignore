@@ -3,5 +3,6 @@
 *.dll
 *.lib
 *.sys
+dst.txt
 x86
 x86_64

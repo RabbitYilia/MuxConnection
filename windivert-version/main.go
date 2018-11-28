@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log"
 	"math/rand"
 	"net"
@@ -28,7 +29,7 @@ type Packet struct {
 
 type ProtocolPacket struct {
 	PacketTimestamp int64
-	PacketData      []string
+	PacketData      map[int]string
 	PacketCount     int
 	PacketTotal     int
 	Finish          bool
@@ -88,16 +89,42 @@ func main() {
 	go ProcessLoop()
 
 	//Get DstIP
-	for {
-		input := GetInput("Dst IP")
-		thisIP := net.ParseIP(input)
-		if input == "" || thisIP == nil {
-			break
+	HaveFile, err := PathExists("./dst.txt")
+	if HaveFile {
+		fi, err := os.Open("./dst.txt")
+		if err != nil {
+			log.Fatal(err)
 		}
-		if strings.Contains(input, ".") {
-			IPv4DstMap[len(IPv4DstMap)] = thisIP.String()
-		} else {
-			IPv6DstMap[len(IPv6DstMap)] = thisIP.String()
+		defer fi.Close()
+		br := bufio.NewReader(fi)
+		for {
+			a, _, c := br.ReadLine()
+			if c == io.EOF {
+				break
+			}
+			thisIP := net.ParseIP(string(a))
+			if thisIP == nil {
+				continue
+			}
+			if strings.Contains(string(a), ".") {
+				IPv4DstMap[len(IPv4DstMap)] = thisIP.String()
+			} else {
+				IPv6DstMap[len(IPv6DstMap)] = thisIP.String()
+			}
+			log.Println("Send to:", string(a))
+		}
+	} else {
+		for {
+			input := GetInput("Dst IP")
+			thisIP := net.ParseIP(input)
+			if input == "" || thisIP == nil {
+				break
+			}
+			if strings.Contains(input, ".") {
+				IPv4DstMap[len(IPv4DstMap)] = thisIP.String()
+			} else {
+				IPv6DstMap[len(IPv6DstMap)] = thisIP.String()
+			}
 		}
 	}
 	if len(IPv4SrcMap) == 0 && len(IPv6SrcMap) == 0 {
@@ -139,7 +166,7 @@ func Send() {
 			break
 		}
 		Timestamp := strconv.FormatInt(time.Now().UnixNano(), 10)
-		md5Ctx.Write([]byte(input))
+		md5Ctx.Write([]byte(input + strconv.Itoa(RandInt(0, 65535))))
 		MD5Sum := hex.EncodeToString(md5Ctx.Sum(nil))
 		md5Ctx.Reset()
 		SplitedMsgs := make(map[string]string)
@@ -180,6 +207,8 @@ func Send() {
 			TXData := make(map[string]string)
 			TXData["Piece"] = strconv.Itoa(piece)
 			TXData["ThisPiece"] = thispiece
+			TXData["SrcIP"] = SrcIP.String()
+			TXData["DstIP"] = DstIP.String()
 			TXData["Timestamp"] = Timestamp
 			TXData["MD5sum"] = MD5Sum
 			TXData["PiecedMsg"] = piecedmsg
@@ -247,42 +276,22 @@ func ProcessLoop() {
 	for {
 		RXPacket := <-rxChannel
 		IPVersion := int(RXPacket.Data[0]) >> 4
-		var SrcIP, DstIP net.IP
-		var SrcPort, DstPort string
 		var ThisRXPacket gopacket.Packet
 		switch IPVersion {
 		case 4:
 			ThisRXPacket = gopacket.NewPacket(RXPacket.Data, layers.LayerTypeIPv4, gopacket.Lazy)
-			IPv4Header, _ := ThisRXPacket.NetworkLayer().(*layers.IPv4)
-			SrcIP = IPv4Header.SrcIP
-			DstIP = IPv4Header.DstIP
 		case 6:
 			ThisRXPacket = gopacket.NewPacket(RXPacket.Data, layers.LayerTypeIPv6, gopacket.Lazy)
-			IPv6Header, _ := ThisRXPacket.NetworkLayer().(*layers.IPv6)
-			SrcIP = IPv6Header.SrcIP
-			DstIP = IPv6Header.DstIP
 		default:
 			txChannel <- RXPacket
 			continue
-		}
-
-		if ThisRXPacket.TransportLayer() != nil {
-			switch ThisRXPacket.TransportLayer().LayerType() {
-			case layers.LayerTypeUDP:
-				UDPHeader := ThisRXPacket.TransportLayer().(*layers.UDP)
-				SrcPort = UDPHeader.SrcPort.String()
-				DstPort = UDPHeader.DstPort.String()
-			default:
-				txChannel <- RXPacket
-				continue
-			}
 		}
 
 		if ThisRXPacket.ApplicationLayer() != nil {
 			RXdata := make(map[string]string)
 			err := json.Unmarshal(ThisRXPacket.ApplicationLayer().Payload(), &RXdata)
 			if err == nil {
-				log.Println("From " + SrcIP.String() + "#" + SrcPort + " to " + DstIP.String() + "#" + DstPort + " :")
+				log.Println("From " + RXdata["SrcIP"] + " to " + RXdata["DstIP"] + " :")
 				ProcessRXData(RXdata)
 				continue
 			}
@@ -306,7 +315,7 @@ func ProcessRXData(RXData map[string]string) {
 		if err != nil {
 			return
 		}
-		PacketBuffer[RXData["MD5sum"]] = &ProtocolPacket{Finish: false, PacketCount: 1, PacketTimestamp: Timestamp, PacketTotal: Piece, PacketData: make([]string, Piece+1)}
+		PacketBuffer[RXData["MD5sum"]] = &ProtocolPacket{Finish: false, PacketCount: 1, PacketTimestamp: Timestamp, PacketTotal: Piece, PacketData: make(map[int]string)}
 		PacketBuffer[RXData["MD5sum"]].PacketData[ThisPiece] = RXData["PiecedMsg"]
 		if PacketBuffer[RXData["MD5sum"]].PacketCount == PacketBuffer[RXData["MD5sum"]].PacketTotal {
 			DataStr := ""
@@ -351,7 +360,8 @@ func TXLoop() {
 		TXPacket := <-txChannel
 		_, err := Handle.Send(TXPacket.Data, TXPacket.Addr)
 		if err != nil {
-			log.Fatal(err)
+			continue
+			//log.Fatal(err)
 		}
 	}
 }
@@ -382,7 +392,7 @@ func RandInt(min, max int) int {
 func CleanBuffer() {
 	for {
 		<-ticker.C
-		TimeOutTime := time.Now().UnixNano() + 10*time.Second.Nanoseconds()
+		TimeOutTime := time.Now().UnixNano() + 60*time.Second.Nanoseconds()
 		for MD5Sum, Pack := range PacketBuffer {
 			if Pack.PacketTimestamp < TimeOutTime {
 				delete(PacketBuffer, MD5Sum)
@@ -458,4 +468,15 @@ func checkSum(msg []byte) uint16 {
 	sum += (sum >> 16)
 	var ans = uint16(^sum)
 	return ans
+}
+
+func PathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
