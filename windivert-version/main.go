@@ -1,19 +1,17 @@
-// PacketMaker project main.go
 package main
 
 import (
-	"C"
 	"bufio"
 	"bytes"
 	"crypto/md5"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"hash"
 	"log"
 	"math/rand"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -23,75 +21,73 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-var IPv6SrcMap map[int]net.IP
-var IPv6SrcMapLen int
-var IPv4SrcMap map[int]net.IP
-var IPv4SrcMapLen int
-var IPv6DstMap map[int]net.IP
-var IPv6DstMapLen int
-var IPv4DstMap map[int]net.IP
-var IPv4DstMapLen int
-var md5Ctx hash.Hash
+type Packet struct {
+	Addr windivert.Address
+	Data []byte
+}
 
-var PacketBuffer map[string][]string
-var PacketTimestamp map[string]string
-var PacketCount map[string]int
-var PacketTotal map[string]int
+type ProtocolPacket struct {
+	PacketTimestamp int64
+	PacketData      []string
+	PacketCount     int
+	PacketTotal     int
+	Finish          bool
+}
+
+var (
+	IPv4SrcMap   = make(map[int]string)
+	IPv4DstMap   = make(map[int]string)
+	IPv6SrcMap   = make(map[int]string)
+	IPv6DstMap   = make(map[int]string)
+	rxChannel    = make(chan Packet)
+	txChannel    = make(chan Packet)
+	md5Ctx       = md5.New()
+	PacketBuffer = make(map[string]*ProtocolPacket)
+	ticker       = time.NewTicker(time.Second * 10)
+	Handle       windivert.Handle
+)
 
 func main() {
-	md5Ctx = md5.New()
-	IPv6SrcMapLen = 0
-	IPv4SrcMapLen = 0
-	IPv6DstMapLen = 0
-	IPv4DstMapLen = 0
-	IPv6SrcMap = make(map[int]net.IP)
-	IPv4SrcMap = make(map[int]net.IP)
-	IPv6DstMap = make(map[int]net.IP)
-	IPv4DstMap = make(map[int]net.IP)
-	PacketBuffer = make(map[string][]string)
-	PacketTimestamp = make(map[string]string)
-	PacketCount = make(map[string]int)
-	PacketTotal = make(map[string]int)
-
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	//Add rxAddr
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	_, localnet192, err := net.ParseCIDR("192.168.0.0/16")
 	_, localnet172, err := net.ParseCIDR("172.16.0.0/12")
+	_, localnet169, err := net.ParseCIDR("169.254.0.0/16")
 	_, localnet10, err := net.ParseCIDR("10.0.0.0/8")
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	IPv4SrcMap[IPv4SrcMapLen] = net.ParseIP("127.0.0.1")
-	IPv6SrcMap[IPv6SrcMapLen] = net.ParseIP("fe80::1")
-	IPv4DstMap[IPv4DstMapLen] = net.ParseIP("127.0.0.1")
-	IPv6DstMap[IPv6DstMapLen] = net.ParseIP("fe80::1")
-	IPv6SrcMapLen = IPv6SrcMapLen + 1
-	IPv4SrcMapLen = IPv4SrcMapLen + 1
-	IPv6DstMapLen = IPv6DstMapLen + 1
-	IPv4DstMapLen = IPv4DstMapLen + 1
 	for _, address := range addrs {
 		thisaddr := net.ParseIP(strings.Split(address.String(), "/")[0])
 		if thisaddr.IsLoopback() || !thisaddr.IsGlobalUnicast() || thisaddr.IsUnspecified() {
 			continue
 		}
-		if localnet10.Contains(thisaddr) || localnet172.Contains(thisaddr) || localnet192.Contains(thisaddr) {
+		if localnet10.Contains(thisaddr) || localnet169.Contains(thisaddr) || localnet172.Contains(thisaddr) || localnet192.Contains(thisaddr) {
 			continue
 		}
 		if strings.Contains(thisaddr.String(), ".") {
-			IPv4SrcMap[IPv4SrcMapLen] = thisaddr
-			IPv4SrcMapLen = IPv4SrcMapLen + 1
+			IPv4SrcMap[len(IPv4SrcMap)] = thisaddr.String()
 		} else {
-			IPv6SrcMap[IPv6SrcMapLen] = thisaddr
-			IPv6SrcMapLen = IPv6SrcMapLen + 1
+			IPv6SrcMap[len(IPv6SrcMap)] = thisaddr.String()
 		}
-
 		log.Println("Listen on:", thisaddr.String())
 	}
 
+	//listen
+	Handle, err = windivert.Open("ipv6 or ( ip.Protocol!=2 and ip.DstAddr<3758096384)", 0, 0, 1)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	go RXLoop()
+	go TXLoop()
+	go ProcessLoop()
+
+	//Get DstIP
 	for {
 		input := GetInput("Dst IP")
 		thisIP := net.ParseIP(input)
@@ -99,58 +95,49 @@ func main() {
 			break
 		}
 		if strings.Contains(input, ".") {
-			IPv4DstMap[IPv4DstMapLen] = thisIP
-			IPv4DstMapLen = IPv4DstMapLen + 1
+			IPv4DstMap[len(IPv4DstMap)] = thisIP.String()
 		} else {
-			IPv6DstMap[IPv6DstMapLen] = thisIP
-			IPv6DstMapLen = IPv6DstMapLen + 1
+			IPv6DstMap[len(IPv6DstMap)] = thisIP.String()
 		}
 	}
-
-	if IPv4SrcMapLen == 1 && IPv6SrcMapLen == 1 {
+	if len(IPv4SrcMap) == 0 && len(IPv6SrcMap) == 0 {
 		log.Fatal("No Address to listen")
 	}
-	if IPv4DstMapLen == 1 && IPv6DstMapLen == 1 {
+	if len(IPv4DstMap) == 0 && len(IPv6DstMap) == 0 {
 		log.Fatal("No Address to send")
 	}
-	if IPv4SrcMapLen == 1 && IPv4DstMapLen == 1 {
-		if IPv6SrcMapLen == 1 || IPv6DstMapLen == 1 {
+	if len(IPv4SrcMap) == 0 && len(IPv4DstMap) == 0 {
+		if len(IPv6SrcMap) == 0 || len(IPv6DstMap) == 0 {
 			log.Fatal("Network Unreachable")
 		}
 	}
-	if IPv6SrcMapLen == 1 && IPv6DstMapLen == 1 {
-		if IPv4SrcMapLen == 1 || IPv4DstMapLen == 1 {
+	if len(IPv6SrcMap) == 0 && len(IPv6DstMap) == 0 {
+		if len(IPv4SrcMap) == 0 || len(IPv4DstMap) == 0 {
 			log.Fatal("Network Unreachable")
 		}
 	}
 
-	Handle, err := windivert.Open("ip.Protocol!=2 and ip.DstAddr<3758096384", 0, 0, 0)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	go RXLoop(Handle)
-	TXLoop(Handle)
+	Send()
 	Handle.Close()
 }
 
-func TXLoop(Handle windivert.Handle) {
+func Send() {
+	var DstIP net.IP
+	var SrcIP net.IP
+	var SrcPort int
+	var DstPort int
 	buffer := gopacket.NewSerializeBuffer()
 	options := gopacket.SerializeOptions{}
 	for {
-
 		err := buffer.Clear()
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		TXAddr := windivert.Address{}
-		TXAddr.Direction = 0
-		TXAddr.IfIdx = 0
-		TXAddr.SubIfIdx = 0
-
 		input := GetInput("Msg")
-
+		if input == "" {
+			break
+		}
 		Timestamp := strconv.FormatInt(time.Now().UnixNano(), 10)
 		md5Ctx.Write([]byte(input))
 		MD5Sum := hex.EncodeToString(md5Ctx.Sum(nil))
@@ -169,55 +156,55 @@ func TXLoop(Handle windivert.Handle) {
 		}
 
 		for thispiece, piecedmsg := range SplitedMsgs {
-			SrcPort := RandInt(1, 65535)
-			DstPort := RandInt(1, 65535)
-			var DstIP net.IP
-			var SrcIP net.IP
+			SrcPort = RandInt(1, 65535)
+			DstPort = RandInt(1, 65535)
 			switch RandInt(0, 1) {
 			case 0:
-				if IPv6SrcMapLen != 1 && IPv6DstMapLen != 1 {
-					DstIP = IPv6DstMap[RandInt(1, IPv6DstMapLen-1)]
-					SrcIP = IPv6SrcMap[RandInt(1, IPv6SrcMapLen-1)]
+				if len(IPv6SrcMap) != 0 && len(IPv6DstMap) != 0 {
+					DstIP = net.ParseIP(IPv6DstMap[RandInt(0, len(IPv6DstMap)-1)])
+					SrcIP = net.ParseIP(IPv6SrcMap[RandInt(0, len(IPv6SrcMap)-1)])
 				} else {
-					DstIP = IPv4DstMap[RandInt(1, IPv4DstMapLen-1)]
-					SrcIP = IPv4SrcMap[RandInt(1, IPv4SrcMapLen-1)]
+					DstIP = net.ParseIP(IPv4DstMap[RandInt(0, len(IPv4DstMap)-1)])
+					SrcIP = net.ParseIP(IPv4SrcMap[RandInt(0, len(IPv4SrcMap)-1)])
 				}
 			case 1:
-				if IPv4SrcMapLen != 1 && IPv4DstMapLen != 1 {
-					DstIP = IPv4DstMap[RandInt(1, IPv4DstMapLen-1)]
-					SrcIP = IPv4SrcMap[RandInt(1, IPv4SrcMapLen-1)]
+				if len(IPv4SrcMap) != 0 && len(IPv4DstMap) != 0 {
+					DstIP = net.ParseIP(IPv4DstMap[RandInt(0, len(IPv4DstMap)-1)])
+					SrcIP = net.ParseIP(IPv4SrcMap[RandInt(0, len(IPv4SrcMap)-1)])
 				} else {
-					DstIP = IPv6DstMap[RandInt(1, IPv6DstMapLen-1)]
-					SrcIP = IPv6SrcMap[RandInt(1, IPv6SrcMapLen-1)]
+					DstIP = net.ParseIP(IPv6DstMap[RandInt(0, len(IPv6DstMap)-1)])
+					SrcIP = net.ParseIP(IPv6SrcMap[RandInt(0, len(IPv6SrcMap)-1)])
 				}
 			}
 
 			TXData := make(map[string]string)
 			TXData["Piece"] = strconv.Itoa(piece)
-			TXData["thisPiece"] = thispiece
-			TXData["timestamp"] = Timestamp
-			TXData["md5sum"] = MD5Sum
-			TXData["piecedmsg"] = piecedmsg
+			TXData["ThisPiece"] = thispiece
+			TXData["Timestamp"] = Timestamp
+			TXData["MD5sum"] = MD5Sum
+			TXData["PiecedMsg"] = piecedmsg
 			TXJson, err := json.Marshal(TXData)
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			UDPLayer := &layers.UDP{}
-			UDPLayer.SrcPort = layers.UDPPort(SrcPort)
-			UDPLayer.DstPort = layers.UDPPort(DstPort)
-			UDPLayer.Length = uint16(len(TXJson) + 8)
+			UDPLayer := &layers.UDP{
+				SrcPort: layers.UDPPort(SrcPort),
+				DstPort: layers.UDPPort(DstPort),
+				Length:  uint16(len(TXJson) + 8),
+			}
 
 			if strings.Contains(DstIP.String(), ",") {
-				ipv4Layer := &layers.IPv4{}
-				ipv4Layer.SrcIP = SrcIP
-				ipv4Layer.DstIP = DstIP
-				ipv4Layer.Version = uint8(4)
-				ipv4Layer.TTL = uint8(64)
-				ipv4Layer.Checksum = uint16(0)
-				ipv4Layer.Protocol = layers.IPProtocolUDP
-				ipv4Layer.IHL = uint8(5)
-				ipv4Layer.Length = uint16(UDPLayer.Length + 20)
+				ipv4Layer := &layers.IPv4{
+					SrcIP:    SrcIP,
+					DstIP:    DstIP,
+					Version:  uint8(4),
+					TTL:      uint8(64),
+					IHL:      uint8(5),
+					Checksum: uint16(0),
+					Protocol: layers.IPProtocolUDP,
+					Length:   uint16(UDPLayer.Length + 20),
+				}
 				v4buffer := gopacket.NewSerializeBuffer()
 				ipv4Layer.SerializeTo(v4buffer, options)
 				v4package := v4buffer.Bytes()
@@ -231,14 +218,14 @@ func TXLoop(Handle windivert.Handle) {
 				UDPLayer.Checksum = checkSum(FakeHeaderbyte)
 				gopacket.SerializeLayers(buffer, options, ipv4Layer, UDPLayer)
 			} else {
-				ipv6Layer := &layers.IPv6{}
-				ipv6Layer.SrcIP = SrcIP
-				ipv6Layer.DstIP = DstIP
-				ipv6Layer.Version = uint8(6)
-				ipv6Layer.HopLimit = uint8(64)
-				ipv6Layer.Length = uint16(UDPLayer.Length)
-				ipv6Layer.NextHeader = layers.IPProtocolUDP
-
+				ipv6Layer := &layers.IPv6{
+					SrcIP:      SrcIP,
+					DstIP:      DstIP,
+					Version:    uint8(6),
+					HopLimit:   uint8(64),
+					Length:     uint16(UDPLayer.Length),
+					NextHeader: layers.IPProtocolUDP,
+				}
 				FakeHeader := makeUDPFakeHeader(SrcIP, DstIP, ipv6Layer.Length, SrcPort, DstPort, UDPLayer.Length)
 				FakeHeaderbyte, err := hex.DecodeString(FakeHeader)
 				if err != nil {
@@ -247,137 +234,161 @@ func TXLoop(Handle windivert.Handle) {
 				UDPLayer.Checksum = checkSum(FakeHeaderbyte)
 				gopacket.SerializeLayers(buffer, options, ipv6Layer, UDPLayer)
 			}
-			TXPacket := append(buffer.Bytes(), TXJson...)
-			TXPacket = windivert.CalcChecksums(TXPacket)
+			TXPacket := Packet{
+				Addr: windivert.Address{Direction: 0, IfIdx: 0, SubIfIdx: 0},
+				Data: windivert.CalcChecksums(append(buffer.Bytes(), TXJson...)),
+			}
+			txChannel <- TXPacket
+		}
+	}
+}
 
-			_, err = Handle.Send(TXPacket, TXAddr)
-			if err != nil {
-				log.Fatal(err)
+func ProcessLoop() {
+	for {
+		RXPacket := <-rxChannel
+		IPVersion := int(RXPacket.Data[0]) >> 4
+		var SrcIP, DstIP net.IP
+		var SrcPort, DstPort string
+		var ThisRXPacket gopacket.Packet
+		switch IPVersion {
+		case 4:
+			ThisRXPacket = gopacket.NewPacket(RXPacket.Data, layers.LayerTypeIPv4, gopacket.Lazy)
+			IPv4Header, _ := ThisRXPacket.NetworkLayer().(*layers.IPv4)
+			SrcIP = IPv4Header.SrcIP
+			DstIP = IPv4Header.DstIP
+		case 6:
+			ThisRXPacket = gopacket.NewPacket(RXPacket.Data, layers.LayerTypeIPv6, gopacket.Lazy)
+			IPv6Header, _ := ThisRXPacket.NetworkLayer().(*layers.IPv6)
+			SrcIP = IPv6Header.SrcIP
+			DstIP = IPv6Header.DstIP
+		default:
+			txChannel <- RXPacket
+			continue
+		}
+
+		if ThisRXPacket.TransportLayer() != nil {
+			switch ThisRXPacket.TransportLayer().LayerType() {
+			case layers.LayerTypeUDP:
+				UDPHeader := ThisRXPacket.TransportLayer().(*layers.UDP)
+				SrcPort = UDPHeader.SrcPort.String()
+				DstPort = UDPHeader.DstPort.String()
+			default:
+				txChannel <- RXPacket
+				continue
 			}
 		}
-	}
-}
 
-func RXLoop(Handle windivert.Handle) {
-	for true {
-		RXPacket := make([]byte, 65535)
-		RXPacketLen, RXAddr, err := Handle.Recv(RXPacket)
-		RXPacket = RXPacket[:RXPacketLen]
-		if err != nil {
-			log.Fatal(err)
+		if ThisRXPacket.ApplicationLayer() != nil {
+			RXdata := make(map[string]string)
+			err := json.Unmarshal(ThisRXPacket.ApplicationLayer().Payload(), &RXdata)
+			if err == nil {
+				log.Println("From " + SrcIP.String() + "#" + SrcPort + " to " + DstIP.String() + "#" + DstPort + " :")
+				ProcessRXData(RXdata)
+				continue
+			}
 		}
-		_, err = Handle.Send(RXPacket, RXAddr)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		go ProcessRX(Handle, RXPacket, RXAddr)
-	}
-}
-
-func ProcessRX(Handle windivert.Handle, RXPacket []byte, RXAddr windivert.Address) {
-	IPVersion := int(RXPacket[0] >> 4)
-	var SrcIP, DstIP net.IP
-	var SrcPort, DstPort string
-	var ThisRXPacket gopacket.Packet
-	switch IPVersion {
-	case 4:
-		ThisRXPacket = gopacket.NewPacket(RXPacket, layers.LayerTypeIPv4, gopacket.Lazy)
-		IPv4Header, _ := ThisRXPacket.NetworkLayer().(*layers.IPv4)
-		SrcIP = IPv4Header.SrcIP
-		DstIP = IPv4Header.DstIP
-	case 6:
-		ThisRXPacket = gopacket.NewPacket(RXPacket, layers.LayerTypeIPv6, gopacket.Lazy)
-		IPv6Header, _ := ThisRXPacket.NetworkLayer().(*layers.IPv6)
-		SrcIP = IPv6Header.SrcIP
-		DstIP = IPv6Header.DstIP
-	default:
-		return
-	}
-	if ThisRXPacket.TransportLayer() != nil {
-		switch ThisRXPacket.TransportLayer().LayerType() {
-		case layers.LayerTypeUDP:
-			UDPHeader := ThisRXPacket.TransportLayer().(*layers.UDP)
-			SrcPort = UDPHeader.SrcPort.String()
-			DstPort = UDPHeader.DstPort.String()
-		case layers.LayerTypeTCP:
-			return
-
-			TCPHeader := ThisRXPacket.TransportLayer().(*layers.TCP)
-			SrcPort = TCPHeader.SrcPort.String()
-			DstPort = TCPHeader.DstPort.String()
-		default:
-			return
-		}
-	}
-
-	if ThisRXPacket.ApplicationLayer() != nil {
-		RXdata := make(map[string]string)
-		err := json.Unmarshal(ThisRXPacket.ApplicationLayer().Payload(), &RXdata)
-		if err == nil {
-			log.Println("From " + SrcIP.String() + "#" + SrcPort + " to " + DstIP.String() + "#" + DstPort + " :")
-			ProcessRXData(RXdata)
-			return
-		}
+		txChannel <- RXPacket
 	}
 }
 
 func ProcessRXData(RXData map[string]string) {
-	databuffer, ok := PacketBuffer[RXData["md5sum"]]
+	RXPacket, ok := PacketBuffer[RXData["MD5sum"]]
+	ThisPiece, err := strconv.Atoi(RXData["ThisPiece"])
+	if err != nil {
+		return
+	}
 	if !ok {
-		PacketTimestamp[RXData["md5sum"]] = RXData["timestamp"]
-		thistotal, err := strconv.Atoi(RXData["Piece"])
+		Timestamp, err := strconv.ParseInt(RXData["Timestamp"], 10, 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		Piece, err := strconv.Atoi(RXData["Piece"])
 		if err != nil {
 			return
 		}
-		packetint, err := strconv.Atoi(RXData["thisPiece"])
-		if err != nil {
-			return
-		}
-
-		var thisbuffer []string
-		thisbuffer = make([]string, thistotal+1)
-		PacketBuffer[RXData["md5sum"]] = thisbuffer
-		PacketCount[RXData["md5sum"]] = 1
-		PacketTotal[RXData["md5sum"]] = thistotal
-		PacketBuffer[RXData["md5sum"]][packetint] = RXData["piecedmsg"]
-		if PacketCount[RXData["md5sum"]] == PacketTotal[RXData["md5sum"]] {
+		PacketBuffer[RXData["MD5sum"]] = &ProtocolPacket{Finish: false, PacketCount: 1, PacketTimestamp: Timestamp, PacketTotal: Piece, PacketData: make([]string, Piece+1)}
+		PacketBuffer[RXData["MD5sum"]].PacketData[ThisPiece] = RXData["PiecedMsg"]
+		if PacketBuffer[RXData["MD5sum"]].PacketCount == PacketBuffer[RXData["MD5sum"]].PacketTotal {
 			DataStr := ""
-			for i := 1; i <= PacketTotal[RXData["md5sum"]]; i++ {
-				DataStr += PacketBuffer[RXData["md5sum"]][i]
+			PacketBuffer[RXData["MD5sum"]].Finish = true
+			for i := 1; i <= PacketBuffer[RXData["MD5sum"]].PacketTotal; i++ {
+				DataStr += PacketBuffer[RXData["md5sum"]].PacketData[i]
 			}
 			log.Println(string(DataStr))
 			delete(PacketBuffer, RXData["md5sum"])
-			delete(PacketTimestamp, RXData["md5sum"])
-			delete(PacketCount, RXData["md5sum"])
-			delete(PacketTotal, RXData["md5sum"])
 		}
 	} else {
-		packetint, err := strconv.Atoi(RXData["thisPiece"])
-		if err != nil {
-			return
+		if RXPacket.PacketData[ThisPiece] != RXData["PiecedMsg"] {
+			RXPacket.PacketData[ThisPiece] = RXData["PiecedMsg"]
+			RXPacket.PacketCount += 1
 		}
-		if databuffer[packetint] != RXData["piecedmsg"] {
-			databuffer[packetint] = RXData["piecedmsg"]
-			PacketCount[RXData["md5sum"]] += 1
-		}
-		if PacketCount[RXData["md5sum"]] == PacketTotal[RXData["md5sum"]] {
+		if RXPacket.PacketCount == RXPacket.PacketTotal {
 			DataStr := ""
-			for i := 1; i <= PacketTotal[RXData["md5sum"]]; i++ {
-				DataStr += PacketBuffer[RXData["md5sum"]][i]
+			RXPacket.Finish = true
+			for i := 1; i <= RXPacket.PacketTotal; i++ {
+				DataStr += RXPacket.PacketData[i]
 			}
 			log.Println(string(DataStr))
 			delete(PacketBuffer, RXData["md5sum"])
-			delete(PacketTimestamp, RXData["md5sum"])
-			delete(PacketCount, RXData["md5sum"])
-			delete(PacketTotal, RXData["md5sum"])
 		}
 	}
+}
+
+func RXLoop() {
+	for {
+		RXBuffer := make([]byte, 65535)
+		RXPacketLen, RXAddr, err := Handle.Recv(RXBuffer)
+		RXBuffer = RXBuffer[:RXPacketLen]
+		if err != nil {
+			log.Fatal(err)
+		}
+		rxChannel <- Packet{Addr: RXAddr, Data: RXBuffer}
+	}
+}
+
+func TXLoop() {
+	for {
+		TXPacket := <-txChannel
+		_, err := Handle.Send(TXPacket.Data, TXPacket.Addr)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
+func GetInput(tip string) string {
+	for {
+		log.Println("Please input " + tip + ":")
+		inputReader := bufio.NewReader(os.Stdin)
+		input, err := inputReader.ReadString('\n')
+		if err != nil {
+			log.Fatal(err)
+		}
+		input = strings.Trim(input, "\n")
+		input = strings.Trim(input, "\r")
+		if input == "" {
+			break
+		}
+		return input
+	}
+	return ""
 }
 
 func RandInt(min, max int) int {
 	rand.Seed(time.Now().UnixNano() * rand.Int63n(100))
 	return min + rand.Intn(max-min+1)
+}
+
+func CleanBuffer() {
+	for {
+		<-ticker.C
+		TimeOutTime := time.Now().UnixNano() + 10*time.Second.Nanoseconds()
+		for MD5Sum, Pack := range PacketBuffer {
+			if Pack.PacketTimestamp < TimeOutTime {
+				delete(PacketBuffer, MD5Sum)
+			}
+		}
+	}
 }
 
 func makeUDPFakeHeader(SrcIPv6 net.IP, DstIPv6 net.IP, iplen uint16, SrcPort int, DstPort int, udplen uint16) string {
@@ -447,41 +458,4 @@ func checkSum(msg []byte) uint16 {
 	sum += (sum >> 16)
 	var ans = uint16(^sum)
 	return ans
-}
-
-func GetInput(tip string) string {
-	for {
-		log.Println("Please input " + tip + ":")
-		inputReader := bufio.NewReader(os.Stdin)
-		input, err := inputReader.ReadString('\n')
-		if err != nil {
-			log.Fatal(err)
-		}
-		input = strings.Trim(input, "\n")
-		input = strings.Trim(input, "\r")
-		if input == "" {
-			break
-		}
-		return input
-	}
-	return ""
-}
-
-func CleanBuffer() {
-	for {
-		TimeOutTime := time.Now().UnixNano() + 10*time.Second.Nanoseconds()
-		for MD5Sum, TimestampStr := range PacketTimestamp {
-			Timestamp, err := strconv.ParseInt(TimestampStr, 10, 64)
-			if err != nil {
-				log.Fatal(err)
-				delete(PacketTimestamp, MD5Sum)
-				delete(PacketCount, MD5Sum)
-			}
-			if Timestamp < TimeOutTime {
-				delete(PacketTimestamp, MD5Sum)
-				delete(PacketCount, MD5Sum)
-			}
-		}
-		time.Sleep(10 * time.Second)
-	}
 }
